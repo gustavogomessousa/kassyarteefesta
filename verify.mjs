@@ -1,0 +1,30 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+import {onRequestGet} from './functions/api/instagram.js';
+const html=fs.readFileSync('index.html','utf8');
+for(const [,path] of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
+  if(!path.startsWith('#') && !path.startsWith('http')) assert.ok(fs.existsSync(path),path);
+}
+const context={window:{}};
+vm.runInNewContext(fs.readFileSync('content.js','utf8'),context);
+for(const work of context.window.SITE.works) assert.ok(fs.existsSync(work.src),work.src);
+const unavailable=await onRequestGet({env:{},request:new Request('https://example.com/api/instagram')});
+assert.equal(unavailable.status,503);
+assert.deepEqual(await unavailable.json(),{posts:[]});
+const stored=new Map();
+globalThis.caches={default:{match:async key=>stored.get(key.url)?.clone(),put:async(key,value)=>stored.set(key.url,value)}};
+let calls=0;
+globalThis.fetch=async(url,options)=>{calls++;assert.equal(options.headers.Authorization,'Bearer test-secret');return Response.json({data:[{media_url:'https://example.com/photo.jpg',permalink:'https://instagram.com/p/example/',caption:'Festa'}]});};
+const input={env:{INSTAGRAM_ACCESS_TOKEN:'test-secret',INSTAGRAM_USER_ID:'123',INSTAGRAM_API_VERSION:'v99.0'},request:new Request('https://example.com/api/instagram')};
+const result=await onRequestGet(input);
+assert.equal(result.status,200);
+const body=await result.json();
+assert.equal(body.posts[0].alt,'Festa');
+assert.ok(!JSON.stringify(body).includes('test-secret'));
+await onRequestGet(input);
+assert.equal(calls,1,'A segunda consulta deve usar o cache');
+stored.clear();
+globalThis.fetch=async()=>new Response('Unavailable',{status:500});
+assert.equal((await onRequestGet(input)).status,502);
+console.log('OK: arquivos locais, imagens, fallback, resposta do feed, cache e falha da API.');
